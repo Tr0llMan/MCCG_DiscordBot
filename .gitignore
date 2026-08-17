@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+MCCGLINK
+
+# IDE
+.idea/
+
+# Java / Gradle (Velocity plugin)
+MCCGLink/.gradle/
+MCCGLink/build/
+MCCGLink/**/build/
