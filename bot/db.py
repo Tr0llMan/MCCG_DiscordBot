@@ -8,12 +8,17 @@ is what generates codes and reads link status. Both sides share the same schema
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 import aiomysql
 
 log = logging.getLogger(__name__)
+
+# Table names cannot be passed as SQL parameters, so a configurable one is
+# interpolated into the query. Restrict it to a safe identifier just in case.
+_IDENTIFIER_RE = re.compile(r"\A[A-Za-z0-9_]+\Z")
 
 # Kept identical to schema.sql so the bot can bootstrap an empty database on its own.
 _SCHEMA_STATEMENTS = (
@@ -53,9 +58,19 @@ class LinkError(Exception):
 class Database:
     """Thin async wrapper around an aiomysql connection pool."""
 
-    def __init__(self, *, host: str, port: int, user: str, password: str, db: str):
+    def __init__(self, *, host: str, port: int, user: str, password: str, db: str,
+                 discordsrv_accounts_table: Optional[str] = None):
         self._config = dict(host=host, port=port, user=user, password=password, db=db)
         self._pool: Optional[aiomysql.Pool] = None
+        # DiscordSRV owns its own account table (created by DiscordSRV on boot). When set,
+        # every new link is mirrored into it so DiscordSRV's group-role sync recognises the
+        # player without anyone having to relink. Blank/None disables the mirror.
+        if discordsrv_accounts_table and not _IDENTIFIER_RE.match(discordsrv_accounts_table):
+            raise ValueError(
+                f"DISCORDSRV_ACCOUNTS_TABLE must be a plain table identifier, "
+                f"got: {discordsrv_accounts_table!r}"
+            )
+        self._discordsrv_accounts_table = discordsrv_accounts_table or None
 
     async def connect(self) -> None:
         self._pool = await aiomysql.create_pool(
@@ -136,7 +151,33 @@ class Database:
                     await cur.execute(
                         "DELETE FROM link_codes WHERE code = %s", (code.code,)
                     )
+                    # Mirror the link into DiscordSRV's own account table (best effort).
+                    await self._mirror_to_discordsrv(cur, discord_id, code.minecraft_uuid)
                 await conn.commit()
             except Exception:
                 await conn.rollback()
                 raise
+
+    async def _mirror_to_discordsrv(self, cur, discord_id: int, minecraft_uuid: str) -> None:
+        """Copy a freshly created link into DiscordSRV's accounts table.
+
+        Best effort: if the table is missing (DiscordSRV not booted yet) or the insert
+        otherwise fails, we log and let the core link stand. A failed statement does not
+        abort the surrounding InnoDB transaction, so the linked_accounts row still commits;
+        the one-time import / periodic reconciliation heals any missed mirror.
+        """
+        if self._discordsrv_accounts_table is None:
+            return
+        try:
+            await cur.execute(
+                f"INSERT IGNORE INTO {self._discordsrv_accounts_table} (discord, uuid) "
+                "VALUES (%s, %s)",
+                (str(discord_id), minecraft_uuid),
+            )
+        except Exception:
+            log.warning(
+                "Could not mirror link (discord=%s uuid=%s) into DiscordSRV table %s; "
+                "the link itself was saved. Run the reconciliation import to backfill.",
+                discord_id, minecraft_uuid, self._discordsrv_accounts_table,
+                exc_info=True,
+            )

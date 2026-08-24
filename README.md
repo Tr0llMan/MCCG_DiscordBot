@@ -26,4 +26,13 @@ this will create a request for the owner to verify your code and merge it to mai
 Working on:
 - /link command in minecraft -> discord account linking
 Done:
-- N/A
+- DiscordSRV group-role sync integration: new links are mirrored into DiscordSRV's own
+  accounts table (same DB) so Discord roles -> LuckPerms groups sync works without anyone
+  relinking. See `DISCORDSRV_ACCOUNTS_TABLE` in `.env` and the one-time `discordsrv_import.sql`.
+
+## DiscordSRV role sync (ops notes)
+DiscordSRV is a Paper/Bukkit plugin and runs on the backend server (not the Velocity proxy),
+alongside LuckPerms + Vault. Point its JDBC account backend at this same MySQL DB with table
+prefix `discordsrv_`, boot it once (creates `discordsrv_accounts`), then run
+`discordsrv_import.sql` to backfill existing links. From then on the bot mirrors every new
+link automatically. Configure the actual group->role pairs in DiscordSRV's `synchronization.yml`.

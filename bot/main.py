@@ -60,12 +60,17 @@ class MCCGBot(commands.Bot):
 def main() -> None:
     load_dotenv()
 
+    # DiscordSRV's own accounts table (in the same DB). New links are mirrored into it so
+    # DiscordSRV group-role sync recognises players without a relink. Blank disables mirroring.
+    discordsrv_table = os.getenv("DISCORDSRV_ACCOUNTS_TABLE", "discordsrv_accounts").strip() or None
+
     db = Database(
         host=_require("DB_HOST"),
         port=int(os.getenv("DB_PORT", "3306")),
         user=_require("DB_USER"),
         password=_require("DB_PASSWORD"),
         db=_require("DB_NAME"),
+        discordsrv_accounts_table=discordsrv_table,
     )
 
     role_env = os.getenv("LINKED_ROLE_ID", "").strip()
