@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.db import LinkError
+from bot.cogs.rolesync import enqueue_held_roles
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +64,14 @@ class Link(commands.Cog):
             return
 
         await self._maybe_grant_role(interaction)
+
+        # Grant any LuckPerms groups the member's current Discord roles map to, so a
+        # freshly linked (already-roled) member doesn't have to wait for a role change.
+        if self.bot.role_group_map and isinstance(interaction.user, discord.Member):
+            await enqueue_held_roles(
+                self.bot.db, pending.minecraft_uuid, interaction.user,
+                self.bot.role_group_map,
+            )
 
         await interaction.followup.send(
             f"Linked to **{pending.minecraft_name}**! You can now join the server.",

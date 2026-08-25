@@ -26,13 +26,24 @@ this will create a request for the owner to verify your code and merge it to mai
 Working on:
 - /link command in minecraft -> discord account linking
 Done:
-- DiscordSRV group-role sync integration: new links are mirrored into DiscordSRV's own
-  accounts table (same DB) so Discord roles -> LuckPerms groups sync works without anyone
-  relinking. See `DISCORDSRV_ACCOUNTS_TABLE` in `.env` and the one-time `discordsrv_import.sql`.
+- Discord role -> LuckPerms group sync (in-house, no extra plugins/bots). The bot queues role
+  changes in the shared DB; the MCCGDiscord Velocity plugin applies them via the LuckPerms API.
 
-## DiscordSRV role sync (ops notes)
-DiscordSRV is a Paper/Bukkit plugin and runs on the backend server (not the Velocity proxy),
-alongside LuckPerms + Vault. Point its JDBC account backend at this same MySQL DB with table
-prefix `discordsrv_`, boot it once (creates `discordsrv_accounts`), then run
-`discordsrv_import.sql` to backfill existing links. From then on the bot mirrors every new
-link automatically. Configure the actual group->role pairs in DiscordSRV's `synchronization.yml`.
+## Discord role -> LuckPerms group sync
+We sync ranks ourselves instead of using DiscordSRV, because our host (UltraServers) exposes
+no SSH/firewall — so RCON can't be secured and any extra bot/port is unwanted. Instead:
+
+1. The bot watches `on_member_update`; when a **linked** member gains/loses a role listed in
+   `ROLE_GROUP_MAP`, it inserts a row into the `group_sync_jobs` table (shared MySQL).
+2. The MCCGDiscord Velocity plugin (where LuckPerms runs with shared MySQL storage) polls that
+   table and applies each change via the LuckPerms API in-process. Changes propagate to the
+   backends automatically. Nothing new listens on the network — only outbound DB reads.
+
+Setup:
+- Edit **`rolemap.toml`** (repo root) — the `[roles]` table maps Discord role IDs to LuckPerms
+  group names. It's not a secret; commit it. Empty = sync disabled. Restart the bot to apply.
+- Enable the **Server Members** privileged intent in the Discord Developer Portal (Bot ->
+  Privileged Gateway Intents) — required for role-change events; the bot only requests it when
+  `rolemap.toml` has at least one mapping.
+- Ensure LuckPerms is on the proxy with **MySQL/shared storage** so changes reach the backends.
+- Tune polling in the MCCGDiscord `config.toml` under `[group-sync]` (defaults: 10s, batch 50).

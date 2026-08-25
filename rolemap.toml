@@ -1,0 +1,28 @@
+# Discord role -> LuckPerms group mapping for rank sync.
+#
+# When a LINKED member gains or loses one of these Discord roles, the bot queues the change
+# and the MCCGDiscord Velocity plugin applies the matching LuckPerms group in-game.
+# This file is NOT a secret — commit it and edit it freely. Restart the bot to apply changes.
+#
+# How to fill it in:
+#   - Turn on Developer Mode in Discord (Settings -> Advanced), right-click a role -> Copy ID.
+#   - Add one line per mapping under [roles]:  "<discord_role_id>" = "<luckperms_group>"
+#   - Quote the role ID (it's a big number) and the group name.
+#   - Group names are CASE-SENSITIVE and must match your LuckPerms groups exactly.
+#
+# Leaving [roles] empty disables role sync entirely (and the bot won't request the
+# privileged members intent). Add at least one mapping, then enable "Server Members Intent"
+# in the Discord Developer Portal (Bot -> Privileged Gateway Intents), and restart the bot.
+
+[roles]
+# "1230961506477412497" = "vip"
+# "1201142977528074382" = "mod"
+# "1230961437355278396" = "admin"
+"1522379128396058635" = "supporter"
+"1534539281056534528" = "media"
+"1521212509523280015" = "builder"
+"1517378323821629507" = "admin"
+"1517390624209240146" = "developer"
+"1541606918919819404" = "culy"
+"1541606939807457351" = "mogrin"
+

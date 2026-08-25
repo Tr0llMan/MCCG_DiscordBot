@@ -8,17 +8,12 @@ is what generates codes and reads link status. Both sides share the same schema
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Optional
 
 import aiomysql
 
 log = logging.getLogger(__name__)
-
-# Table names cannot be passed as SQL parameters, so a configurable one is
-# interpolated into the query. Restrict it to a safe identifier just in case.
-_IDENTIFIER_RE = re.compile(r"\A[A-Za-z0-9_]+\Z")
 
 # Kept identical to schema.sql so the bot can bootstrap an empty database on its own.
 _SCHEMA_STATEMENTS = (
@@ -36,6 +31,17 @@ _SCHEMA_STATEMENTS = (
         minecraft_uuid CHAR(36)    NOT NULL UNIQUE,
         minecraft_name VARCHAR(16) NOT NULL,
         created_at     TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS group_sync_jobs (
+        id             BIGINT      NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        minecraft_uuid CHAR(36)    NOT NULL,
+        group_name     VARCHAR(64) NOT NULL,
+        action         VARCHAR(6)  NOT NULL,
+        created_at     TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        processed_at   TIMESTAMP   NULL DEFAULT NULL,
+        INDEX idx_group_sync_unprocessed (processed_at)
     )
     """,
 )
@@ -58,19 +64,9 @@ class LinkError(Exception):
 class Database:
     """Thin async wrapper around an aiomysql connection pool."""
 
-    def __init__(self, *, host: str, port: int, user: str, password: str, db: str,
-                 discordsrv_accounts_table: Optional[str] = None):
+    def __init__(self, *, host: str, port: int, user: str, password: str, db: str):
         self._config = dict(host=host, port=port, user=user, password=password, db=db)
         self._pool: Optional[aiomysql.Pool] = None
-        # DiscordSRV owns its own account table (created by DiscordSRV on boot). When set,
-        # every new link is mirrored into it so DiscordSRV's group-role sync recognises the
-        # player without anyone having to relink. Blank/None disables the mirror.
-        if discordsrv_accounts_table and not _IDENTIFIER_RE.match(discordsrv_accounts_table):
-            raise ValueError(
-                f"DISCORDSRV_ACCOUNTS_TABLE must be a plain table identifier, "
-                f"got: {discordsrv_accounts_table!r}"
-            )
-        self._discordsrv_accounts_table = discordsrv_accounts_table or None
 
     async def connect(self) -> None:
         self._pool = await aiomysql.create_pool(
@@ -117,6 +113,35 @@ class Database:
             still_valid=bool(row["still_valid"]),
         )
 
+    async def get_minecraft_uuid(self, discord_id: int) -> Optional[str]:
+        """Return the linked Minecraft UUID for a Discord user, or None if unlinked."""
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT minecraft_uuid FROM linked_accounts WHERE discord_id = %s",
+                    (discord_id,),
+                )
+                row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def enqueue_group_sync(
+        self, minecraft_uuid: str, group_name: str, action: str
+    ) -> None:
+        """Queue a LuckPerms group change for the Velocity plugin to apply.
+
+        `action` must be "add" or "remove". The plugin polls group_sync_jobs and
+        applies pending rows via the LuckPerms API, then marks them processed.
+        """
+        if action not in ("add", "remove"):
+            raise ValueError(f"action must be 'add' or 'remove', got: {action!r}")
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO group_sync_jobs (minecraft_uuid, group_name, action) "
+                    "VALUES (%s, %s, %s)",
+                    (minecraft_uuid, group_name, action),
+                )
+
     async def create_link(self, code: PendingCode, discord_id: int) -> None:
         """Atomically bind the Minecraft account to a Discord user.
 
@@ -151,33 +176,7 @@ class Database:
                     await cur.execute(
                         "DELETE FROM link_codes WHERE code = %s", (code.code,)
                     )
-                    # Mirror the link into DiscordSRV's own account table (best effort).
-                    await self._mirror_to_discordsrv(cur, discord_id, code.minecraft_uuid)
                 await conn.commit()
             except Exception:
                 await conn.rollback()
                 raise
-
-    async def _mirror_to_discordsrv(self, cur, discord_id: int, minecraft_uuid: str) -> None:
-        """Copy a freshly created link into DiscordSRV's accounts table.
-
-        Best effort: if the table is missing (DiscordSRV not booted yet) or the insert
-        otherwise fails, we log and let the core link stand. A failed statement does not
-        abort the surrounding InnoDB transaction, so the linked_accounts row still commits;
-        the one-time import / periodic reconciliation heals any missed mirror.
-        """
-        if self._discordsrv_accounts_table is None:
-            return
-        try:
-            await cur.execute(
-                f"INSERT IGNORE INTO {self._discordsrv_accounts_table} (discord, uuid) "
-                "VALUES (%s, %s)",
-                (str(discord_id), minecraft_uuid),
-            )
-        except Exception:
-            log.warning(
-                "Could not mirror link (discord=%s uuid=%s) into DiscordSRV table %s; "
-                "the link itself was saved. Run the reconciliation import to backfill.",
-                discord_id, minecraft_uuid, self._discordsrv_accounts_table,
-                exc_info=True,
-            )

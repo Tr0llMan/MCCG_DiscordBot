@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -30,18 +32,28 @@ def _require(name: str) -> str:
 
 class MCCGBot(commands.Bot):
     def __init__(self, *, guild_id: int, db: Database,
-                 linked_role_id: int | None, code_expiry_minutes: int):
-        # No privileged intents needed: slash commands work with the default set.
-        super().__init__(command_prefix="!", intents=discord.Intents.default())
+                 linked_role_id: int | None, code_expiry_minutes: int,
+                 role_group_map: dict[int, str]):
+        intents = discord.Intents.default()
+        # Role -> group sync needs member role-change events (a privileged intent).
+        # Only request it when sync is actually configured, so the default deploy is
+        # unchanged and doesn't need the portal toggle.
+        if role_group_map:
+            intents.members = True
+        super().__init__(command_prefix="!", intents=intents)
         self.guild_id = guild_id
         self.db = db
         self.linked_role_id = linked_role_id
         self.code_expiry_minutes = code_expiry_minutes
+        self.role_group_map = role_group_map
 
     async def setup_hook(self) -> None:
         await self.db.connect()
         await self.db.ensure_schema()
         await self.load_extension("bot.cogs.link")
+        if self.role_group_map:
+            await self.load_extension("bot.cogs.rolesync")
+            log.info("Role->group sync enabled for %d role(s)", len(self.role_group_map))
 
         # Register commands to the one guild so they appear instantly (no global propagation wait).
         guild = discord.Object(id=self.guild_id)
@@ -60,17 +72,12 @@ class MCCGBot(commands.Bot):
 def main() -> None:
     load_dotenv()
 
-    # DiscordSRV's own accounts table (in the same DB). New links are mirrored into it so
-    # DiscordSRV group-role sync recognises players without a relink. Blank disables mirroring.
-    discordsrv_table = os.getenv("DISCORDSRV_ACCOUNTS_TABLE", "discordsrv_accounts").strip() or None
-
     db = Database(
         host=_require("DB_HOST"),
         port=int(os.getenv("DB_PORT", "3306")),
         user=_require("DB_USER"),
         password=_require("DB_PASSWORD"),
         db=_require("DB_NAME"),
-        discordsrv_accounts_table=discordsrv_table,
     )
 
     role_env = os.getenv("LINKED_ROLE_ID", "").strip()
@@ -79,8 +86,42 @@ def main() -> None:
         db=db,
         linked_role_id=int(role_env) if role_env else None,
         code_expiry_minutes=int(os.getenv("CODE_EXPIRY_MINUTES", "10")),
+        role_group_map=_load_role_group_map(),
     )
     bot.run(_require("DISCORD_TOKEN"))
+
+
+# rolemap.toml lives at the repo root (next to schema.sql), resolved relative to this file
+# so it's found regardless of the working directory. Override with ROLE_MAP_FILE if needed.
+_ROLE_MAP_PATH = Path(__file__).resolve().parent.parent / "rolemap.toml"
+
+
+def _load_role_group_map() -> dict[int, str]:
+    """Load the Discord-role -> LuckPerms-group map from rolemap.toml.
+
+    Not a secret — this file is meant to be committed and edited freely. A missing file or
+    an empty [roles] table disables role sync (and the members intent is not requested).
+    """
+    path = Path(os.getenv("ROLE_MAP_FILE", "")) if os.getenv("ROLE_MAP_FILE") else _ROLE_MAP_PATH
+    if not path.exists():
+        log.info("No role map at %s — role->group sync disabled.", path)
+        return {}
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"Could not read {path}: {exc}")
+
+    roles = data.get("roles", {})
+    result: dict[int, str] = {}
+    for role_id, group in roles.items():
+        try:
+            result[int(role_id)] = str(group)
+        except (ValueError, TypeError):
+            raise SystemExit(
+                f"{path}: role key {role_id!r} is not a numeric Discord role ID"
+            )
+    return result
 
 
 if __name__ == "__main__":
