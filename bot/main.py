@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import logging
 import os
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+ (stdlib)
+except ModuleNotFoundError:  # Python < 3.11 — tomli backport has the identical API
+    import tomli as tomllib
 
 import discord
 from discord.ext import commands
