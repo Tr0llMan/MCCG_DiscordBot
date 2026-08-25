@@ -44,6 +44,12 @@ _SCHEMA_STATEMENTS = (
         INDEX idx_group_sync_unprocessed (processed_at)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS role_sync_requests (
+        minecraft_uuid CHAR(36)  NOT NULL PRIMARY KEY,
+        requested_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 )
 
 
@@ -123,6 +129,41 @@ class Database:
                 )
                 row = await cur.fetchone()
         return row[0] if row else None
+
+    async def get_discord_id(self, minecraft_uuid: str) -> Optional[int]:
+        """Return the linked Discord user ID for a Minecraft UUID, or None if unlinked.
+
+        This is the primary-DB (linked_accounts) check used during reconcile-on-join.
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT discord_id FROM linked_accounts WHERE minecraft_uuid = %s",
+                    (minecraft_uuid,),
+                )
+                row = await cur.fetchone()
+        return int(row[0]) if row else None
+
+    async def fetch_reconcile_requests(self, limit: int) -> list[str]:
+        """Return up to `limit` Minecraft UUIDs queued for a role reconcile (oldest first)."""
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT minecraft_uuid FROM role_sync_requests "
+                    "ORDER BY requested_at LIMIT %s",
+                    (limit,),
+                )
+                rows = await cur.fetchall()
+        return [row[0] for row in rows]
+
+    async def delete_reconcile_request(self, minecraft_uuid: str) -> None:
+        """Remove a processed reconcile request."""
+        async with self._pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM role_sync_requests WHERE minecraft_uuid = %s",
+                    (minecraft_uuid,),
+                )
 
     async def enqueue_group_sync(
         self, minecraft_uuid: str, group_name: str, action: str

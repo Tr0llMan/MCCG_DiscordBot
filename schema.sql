@@ -29,3 +29,12 @@ CREATE TABLE IF NOT EXISTS group_sync_jobs (
     processed_at   TIMESTAMP   NULL DEFAULT NULL,  -- NULL = still pending
     INDEX idx_group_sync_unprocessed (processed_at)
 );
+
+-- Reconcile-on-join signal. The Velocity plugin inserts a player's UUID here when they
+-- log in (already linked); the bot picks it up, reads that account's current Discord roles,
+-- and enqueues the matching groups. Catches members who were linked + roled *before* sync
+-- existed, so they get their groups on next join. One row per account (PK), refreshed on relog.
+CREATE TABLE IF NOT EXISTS role_sync_requests (
+    minecraft_uuid CHAR(36)  NOT NULL PRIMARY KEY,
+    requested_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
